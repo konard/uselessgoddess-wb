@@ -5,18 +5,17 @@
 
 use crate::math_utils::Vec2;
 use rand::RngExt;
-use std::f64::consts::SQRT_2;
 
 /// WindMouse parameters for human-like mouse movement.
 #[derive(Debug, Clone)]
 pub struct WindMouseParams {
-    /// Gravity force — pulls cursor toward target.
+    /// G_0: Gravity constant — strength of pull toward destination.
     pub gravity: f64,
-    /// Wind force — random perturbation strength.
+    /// W_0: Wind constant — maximum magnitude of random wind force.
     pub wind: f64,
-    /// Maximum step size per move.
+    /// M_0: Maximum step size / velocity clamp.
     pub max_step: f64,
-    /// Minimum distance where wind applies (below this, only gravity).
+    /// D_0: Distance threshold — switches from "far" to "near" behavior.
     pub min_dist: f64,
     /// Target wait time between moves in microseconds.
     pub wait_us: u64,
@@ -27,94 +26,106 @@ impl Default for WindMouseParams {
         Self {
             gravity: 9.0,
             wind: 3.0,
-            max_step: 10.0,
+            max_step: 15.0,
             min_dist: 12.0,
             wait_us: 500,
         }
     }
 }
 
-/// Generate a sequence of relative mouse movements using the WindMouse algorithm.
+/// Generate a sequence of mouse move points using the WindMouse algorithm.
 ///
-/// The algorithm simulates realistic human mouse movement by combining:
-/// - Gravity: a constant pull toward the target
-/// - Wind: random forces that create natural curve/wobble
+/// Exact port of the reference Python implementation from:
+/// https://ben.land/post/2021/04/25/windmouse-human-mouse-movement/
 ///
-/// Near the target, wind is suppressed and gravity dominates for precision.
+/// The algorithm models the cursor as a particle subject to:
+/// - **Gravity**: deterministic pull toward destination (like a spring)
+/// - **Wind**: stochastic force for natural wobble (decays near target)
 ///
-/// Returns a list of (dx, dy) integer moves to apply sequentially.
+/// Returns a list of (dx, dy) relative integer moves to apply sequentially.
 pub fn wind_mouse(start: Vec2, end: Vec2, params: &WindMouseParams) -> Vec<(i32, i32)> {
     let mut rng = rand::rng();
     let mut moves = Vec::new();
 
-    let mut current_x = start.x;
-    let mut current_y = start.y;
-
-    let mut wind_x = 0.0;
-    let mut wind_y = 0.0;
-
-    let sqrt2 = SQRT_2;
     let sqrt3 = 3.0f64.sqrt();
+    let sqrt5 = 5.0f64.sqrt();
+
+    // Floating-point position accumulators
+    let mut pos_x = start.x;
+    let mut pos_y = start.y;
+
+    // Last emitted integer position
+    let mut current_ix = pos_x.round() as i32;
+    let mut current_iy = pos_y.round() as i32;
+
+    // Velocity (accumulated, not recomputed each step)
+    let mut v_x = 0.0;
+    let mut v_y = 0.0;
+
+    // Wind vector (smoothed random walk)
+    let mut w_x = 0.0;
+    let mut w_y = 0.0;
+
+    // M_0 is mutated during execution (shrinks near target)
+    let mut m_0 = params.max_step;
 
     loop {
-        let dist = ((end.x - current_x).powi(2) + (end.y - current_y).powi(2)).sqrt();
-
+        let dist = (end.x - pos_x).hypot(end.y - pos_y);
         if dist < 1.0 {
             break;
         }
 
-        // Wind component: random walk, magnitude decreases near target
+        // Wind magnitude capped by distance
+        let w_mag = params.wind.min(dist);
+
         if dist >= params.min_dist {
-            wind_x = wind_x / sqrt3 + (rng.random::<f64>() * (params.wind * 2.0 + 1.0) - params.wind) / sqrt2;
-            wind_y = wind_y / sqrt3 + (rng.random::<f64>() * (params.wind * 2.0 + 1.0) - params.wind) / sqrt2;
+            // Far from target: wind has random perturbation
+            w_x = w_x / sqrt3 + (2.0 * rng.random::<f64>() - 1.0) * w_mag / sqrt5;
+            w_y = w_y / sqrt3 + (2.0 * rng.random::<f64>() - 1.0) * w_mag / sqrt5;
         } else {
-            wind_x /= sqrt2;
-            wind_y /= sqrt2;
-            if params.max_step < 3.0 {
-                // Very close: just step directly
-                let remaining_x = end.x - current_x;
-                let remaining_y = end.y - current_y;
-                moves.push((remaining_x.round() as i32, remaining_y.round() as i32));
-                break;
+            // Near target: wind decays, step size shrinks
+            w_x /= sqrt3;
+            w_y /= sqrt3;
+            if m_0 < 3.0 {
+                m_0 = rng.random::<f64>() * 3.0 + 3.0;
+            } else {
+                m_0 /= sqrt5;
             }
         }
 
-        // Gravity component: pulls toward target
-        let velo_x = wind_x + params.gravity * (end.x - current_x) / dist;
-        let velo_y = wind_y + params.gravity * (end.y - current_y) / dist;
+        // Accumulate velocity: wind + gravity (unit vector toward dest scaled by G_0)
+        v_x += w_x + params.gravity * (end.x - pos_x) / dist;
+        v_y += w_y + params.gravity * (end.y - pos_y) / dist;
 
-        // Clamp velocity to max step
-        let velo_mag = (velo_x.powi(2) + velo_y.powi(2)).sqrt();
-        let max_step = if dist < params.min_dist {
-            // Near target: smaller steps for precision
-            (params.max_step * (dist / params.min_dist)).max(1.0)
-        } else {
-            params.max_step
-        };
-
-        let (step_x, step_y) = if velo_mag > max_step {
-            let scale = max_step / velo_mag;
-            (velo_x * scale, velo_y * scale)
-        } else {
-            (velo_x, velo_y)
-        };
-
-        let dx = step_x.round() as i32;
-        let dy = step_y.round() as i32;
-
-        if dx != 0 || dy != 0 {
-            moves.push((dx, dy));
+        // Clamp velocity magnitude to M_0
+        let v_mag = v_x.hypot(v_y);
+        if v_mag > m_0 {
+            let v_clip = m_0 / 2.0 + rng.random::<f64>() * m_0 / 2.0;
+            v_x = (v_x / v_mag) * v_clip;
+            v_y = (v_y / v_mag) * v_clip;
         }
 
-        current_x += step_x;
-        current_y += step_y;
+        // Update floating-point position
+        pos_x += v_x;
+        pos_y += v_y;
+
+        // Emit integer move only if the rounded position changed
+        let move_ix = pos_x.round() as i32;
+        let move_iy = pos_y.round() as i32;
+        if current_ix != move_ix || current_iy != move_iy {
+            let dx = move_ix - current_ix;
+            let dy = move_iy - current_iy;
+            moves.push((dx, dy));
+            current_ix = move_ix;
+            current_iy = move_iy;
+        }
     }
 
-    // Final correction: ensure we arrive exactly at the target
-    let final_dx = (end.x - current_x).round() as i32;
-    let final_dy = (end.y - current_y).round() as i32;
-    if final_dx != 0 || final_dy != 0 {
-        moves.push((final_dx, final_dy));
+    // Final correction to land exactly on target
+    let final_ix = end.x.round() as i32;
+    let final_iy = end.y.round() as i32;
+    if current_ix != final_ix || current_iy != final_iy {
+        moves.push((final_ix - current_ix, final_iy - current_iy));
     }
 
     moves
