@@ -1,0 +1,83 @@
+# CS2 Deathmatch Bot Configuration
+# Copy this file to config.toml and adjust values for your setup.
+
+[general]
+# Target tick rate in Hz (frames per second for the bot loop).
+tick_rate = 60
+# Dry-run mode: logs all actions without sending actual inputs to the game.
+# Set to true for testing/debugging.
+dry_run = false
+
+[models]
+# Path to the YOLO ONNX model for enemy detection.
+# Input: 384x288 RGB frame (CHW, float32, normalized to [0,1])
+# Output: bounding boxes with classes: t_head(0), ct_head(1), t_body(2), ct_body(3)
+yolo_path = "models/yolo_detect.onnx"
+
+# Path to the RepVIT ONNX model for navigation.
+# Inputs: screen frame + minimap crop + map_idx (int64)
+# Outputs: position [B,2], z [B,1], angle [B,4] (yaw_x, yaw_y, pitch_x, pitch_y)
+repvit_path = "models/repvit_nav.onnx"
+
+# Use CUDA execution provider for GPU inference.
+use_cuda = false
+
+# CUDA device ID (only used if use_cuda = true).
+cuda_device_id = 0
+
+[screen]
+# Screen capture resolution. Must match YOLO model input dimensions.
+width = 384
+height = 288
+
+[aim]
+# FOV cone in degrees — only engage targets within this angle from crosshair center.
+fov_degrees = 45.0
+
+# WindMouse parameters (from ben.land/post/2021/04/25/windmouse-human-mouse-movement/)
+# Gravity: strength of pull toward target. Higher = faster convergence.
+wind_gravity = 9.0
+# Wind: random perturbation strength. Higher = more curved paths.
+wind_wind = 3.0
+# Maximum pixel step per mouse move. Limits teleport-like jumps.
+wind_max_step = 10.0
+# Minimum distance (pixels) where wind forces apply. Below this, only gravity.
+wind_min_dist = 12.0
+
+# One-Euro filter for aim jitter reduction (optional).
+# Enable if the raw aim delta is too jittery.
+one_euro = false
+# Minimum cutoff frequency (Hz). Lower = more smoothing when stationary.
+one_euro_min_cutoff = 1.0
+# Speed coefficient. Higher = less lag during fast aim movements.
+one_euro_beta = 0.007
+
+[nav]
+# Path to the nav mesh JSON file (awpy export format).
+# Contains area definitions with corners, connections, and ladders.
+nav_file = "maps/de_dust2.json"
+
+# Map index for RepVIT model input.
+map_idx = 0
+
+# Path smoothing method:
+# "catmull" — Catmull-Rom spline interpolation on area centers (simple, smooth)
+# "funnel"  — Funnel/string-pulling algorithm (geometrically optimal, tight corners)
+smooth_method = "catmull"
+
+# Distance to waypoint (game units) before advancing to the next one.
+waypoint_threshold = 64.0
+
+[movement]
+# Walking speed in game units per second (for reference/timing calculations).
+walk_speed = 250.0
+
+[sensitivity]
+# In-game mouse sensitivity setting.
+# This must match your CS2 sensitivity setting for accurate aim.
+game_sensitivity = 2.0
+
+# FOV scale factor. Used in the delta calculation:
+#   mouse_delta = (target_px - screen_center) * game_sensitivity / fov_scale
+# Default 90.0 corresponds to CS2's default 90-degree horizontal FOV.
+fov_scale = 90.0
